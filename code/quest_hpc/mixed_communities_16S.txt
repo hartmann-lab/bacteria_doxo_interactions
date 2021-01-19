@@ -1,0 +1,92 @@
+#!/bin/bash
+
+
+### qiime2 accessed via built singularity container file 'qiime2-core2018-8.simg'
+module load singularity 
+
+
+### pre-process 16S sequence data from NCBI: use cutadapt in qiime2 to trim adapters, trim at N or base quality <20, remove sequences <100 bp 
+cd <path_to_fastq_files> 
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg cutadapt -a AGATCGGAAGAG -A AGATCGGAAGAG -q 20 --trim-n -m 100 -o $R1_trim -p $R2_trim $R1 $R2
+# where $R1 and $R2 are read 1 and read 2; $R1_trim and $R2_trim are respective output files
+
+
+### qiime2: de-noise and generate feature table
+
+## import trimmed reads (R1) to archive qiime format
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime tools import \
+  --type 'SampleData[SequencesWithQuality]' \
+  --input-path <path_to_R1_trim_files> \
+  --input-format CasavaOneEightSingleLanePerSampleDirFmt \
+  --output-path mixed_communities_16S/seq-trim.qza
+
+## visualize quality of trimmed data
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime demux summarize \
+  --i-data mixed_communities_16S/seq-trim.qza \
+  --o-visualization mixed_communities_16S/stats_viz/seq-trim-viz.qzv
+
+## dada de-noise paired-end
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime dada2 denoise-single \
+  --i-demultiplexed-seqs mixed_communities_16S/seq-trim.qza \
+  --p-trunc-q 20 --p-trunc-len 120 \
+  --p-n-threads 24 \
+  --o-table mixed_communities_16S/dada-table.qza \
+  --o-representative-sequences mixed_communities_16S/dada-rep-seqs.qza \
+  --o-denoising-stats mixed_communities_16S/stats_viz/dada-denoising-stats.qza
+
+## dada summarize feature table
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime feature-table summarize \
+  --i-table mixed_communities_16S/dada-table.qza \
+  --o-visualization mixed_communities_16S/stats_viz/dada-table.qzv \
+  --m-sample-metadata-file mixed_communities_16S/sample-metadata.tsv
+
+## dada tabulate feature table
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime feature-table tabulate-seqs \
+  --i-data mixed_communities_16S/dada-rep-seqs.qza \
+  --o-visualization mixed_communities_16S/stats_viz/dada-rep-seqs.qzv
+  
+
+### qiime2: taxonomic classification with Silva 99 database
+
+## import silva db reference files (download latest release from https://www.arb-silva.de/download/archive/qiime/)
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path <path_to_downloaded_silva_db>/SILVA_132_QIIME_release/rep_set/rep_set_16S_only/99/silva_132_99_16S.fna \
+  --output-path mixed_communities_16S/reference_db/silva-99.qza
+
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path <path_to_downloaded_silva_db>/SILVA_132_QIIME_release/taxonomy/16S_only/99/taxonomy_all_levels.txt \
+  --output-path mixed_communities_16S/reference_db/silva-99-reference-taxonomy.qza
+
+## classifier extract sequences 
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime feature-classifier extract-reads \
+  --i-sequences mixed_communities_16S/reference_db/silva-99.qza \
+  --p-f-primer GTGCCAGCMGCCGCGGTAA --p-r-primer GGACTACHVGGGTWTCTAAT --p-trunc-len 245 \
+  --o-reads mixed_communities_16S/reference_db/silva-99-reference-seqs.qza
+
+## strain classifier
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads mixed_communities_16S/reference_db/silva-99-reference-seqs.qza \
+  --i-reference-taxonomy mixed_communities_16S/reference_db/silva-99-reference-taxonomy.qza \
+  --o-classifier mixed_communities_16S/reference_db/silva-99-classifier.qza
+
+## taxonomic analysis
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime feature-classifier classify-sklearn \
+  --i-classifier mixed_communities_16S/reference_db/silva-99-classifier.qza \
+  --i-reads mixed_communities_16S/dada-rep-seqs.qza \
+  --o-classification mixed_communities_16S/taxonomy-silva-99.qza
+
+## taxonomy print
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime metadata tabulate \
+  --m-input-file mixed_communities_16S/taxonomy-silva-99.qza \
+  --o-visualization mixed_communities_16S/stats_viz/taxonomy-silva-99.qzv
+  
+## taxonomy barplot
+singularity exec <path_to_qiime2_singularity>/qiime2-core2018-8.simg qiime taxa barplot \
+  --i-table mixed_communities_16S/dada-table.qza \
+  --i-taxonomy mixed_communities_16S/taxonomy-silva-99.qza \
+  --m-metadata-file mixed_communities_16S/sample-metadata.tsv \
+  --o-visualization mixed_communities_16S/stats_viz/taxa-bar-plots-silva-99.qzv
+
